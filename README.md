@@ -35,3 +35,6 @@ You need **Python 3.7+** installed on your system. It is recommended to use a vi
 python -m venv venv
 source venv/bin/activate  # On Linux/Mac
 # venv\Scripts\activate   # On Windows
+
+# Install dependencies
+pip install -r requirements.txt
