@@ -1,0 +1,21 @@
+# Virtual Environments (Likely the cause of 10k+ files)
+venv/
+env/
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Mac OS system files
+.DS_Store
+
+# IDE settings
+.vscode/
+.idea/
+
+# Large datasets (optional)
+dataset/
