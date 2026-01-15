@@ -1,0 +1,358 @@
+import os
+
+def create_file(path, content):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"Created: {path}")
+
+def main():
+    # 1. Create Directories
+    dirs = ["backend", "frontend", "models"]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+        print(f"Directory ensured: {d}/")
+
+    # 2. Backend Code
+    backend_code = r"""# Backend API
+from typing import Dict, Any
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
+import joblib
+import os
+
+# ------------------------------
+# Load model artifacts
+# ------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Models are expected in a 'models' directory at the project root (sibling to backend folder)
+MODELS_DIR = os.path.join(BASE_DIR, "..", "models")
+
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(MODELS_DIR, "xgb_model.pkl"))
+FEATS_PATH = os.getenv("FEATS_PATH", os.path.join(MODELS_DIR, "selected_features.pkl"))
+THRESH_PATH = os.getenv("THRESH_PATH", os.path.join(MODELS_DIR, "best_threshold.pkl"))
+
+# Fallback selected features
+FALLBACK_FEATURES = [
+    "sugar_intake","bmi","cholesterol","sleep_hours",
+    "physical_activity","work_hours","blood_pressure",
+    "calorie_intake","water_intake",
+]
+
+# Load model
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    model = None
+    print(f"[Backend] Failed to load model from {MODEL_PATH}: {e}")
+
+# Load features list
+try:
+    sel_feats = joblib.load(FEATS_PATH)
+    if not isinstance(sel_feats, (list, tuple)):
+        sel_feats = FALLBACK_FEATURES
+except Exception:
+    sel_feats = FALLBACK_FEATURES
+
+# Load tuned threshold
+try:
+    THRESH = float(joblib.load(THRESH_PATH))
+except Exception:
+    THRESH = 0.5
+
+MODEL_VERSION = os.getenv("MODEL_VERSION", "xgb_red_v1")
+
+# ------------------------------
+# App + CORS
+# ------------------------------
+app = FastAPI(title="Lifestyle Risk API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ------------------------------
+# Defaults for missing fields
+# ------------------------------
+DEFAULTS: Dict[str, float] = {
+    "sugar_intake": 50.0,
+    "bmi": 22.0,
+    "cholesterol": 180.0,
+    "sleep_hours": 7.0,
+    "physical_activity": 5.0,
+    "work_hours": 8.0,
+    "blood_pressure": 120.0,
+    "calorie_intake": 2000.0,
+    "water_intake": 2.0,
+}
+
+# ------------------------------
+# Routes
+# ------------------------------
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "features": list(sel_feats),
+        "threshold": float(THRESH),
+        "model_version": MODEL_VERSION,
+        "model_loaded": bool(model is not None),
+    }
+
+@app.post("/predict")
+def predict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if model is None:
+        return {"error": "model_not_loaded", "detail": f"Missing model at {MODEL_PATH}"}
+
+    data = dict(payload or {})
+
+    # Ensure all required features exist
+    for f in sel_feats:
+        if data.get(f) is None:
+            data[f] = DEFAULTS.get(f, 0.0)
+
+    # Build dataframe in correct order
+    df = pd.DataFrame([data]).reindex(columns=sel_feats, fill_value=0)
+
+    proba = model.predict_proba(df)[:, 1]
+    p = float(proba[0])
+    pred = "At Risk" if p > THRESH else "Healthy"
+
+    return {
+        "prediction": pred,
+        "probability": p,
+        "threshold": float(THRESH),
+        "features_used": list(sel_feats),
+        "model_version": MODEL_VERSION,
+    }
+"""
+
+    # 3. Frontend Code
+    frontend_code = r'''# Frontend Application
+import streamlit as st
+import requests
+import streamlit.components.v1 as components
+from typing import Dict, Any
+
+# ==============================
+# Page config + CSS styles
+# ==============================
+st.set_page_config(page_title="Lifestyle Disease Risk Predictor", page_icon="🩺", layout="wide")
+
+PRIMARY = "#22d3ee"  # cyan
+ACCENT = "#a78bfa"   # purple
+GOOD   = "#22c55e"   # green
+WARN   = "#f59e0b"   # amber
+DANGER = "#ef4444"   # red
+
+st.markdown(
+    f"""
+    <style>
+      .app-header h1 {{
+        font-size: 2.2rem; font-weight: 900; letter-spacing:.3px; margin-bottom:.25rem;
+      }}
+      .sub {{ opacity:.8; margin-bottom:1rem; }}
+      .card {{
+        border-radius: 14px; padding: 18px 18px; background: #0e1117; border: 1px solid #222633;
+      }}
+      .pill {{ display:inline-block; padding:6px 12px; border-radius:999px; font-weight:700; color:#fff; }}
+      .pill-blue   {{ background:{PRIMARY}; }}
+      .pill-green  {{ background:{GOOD}; }}
+      .pill-amber  {{ background:{WARN}; }}
+      .pill-red    {{ background:{DANGER}; }}
+      .result {{
+        border-radius: 16px; padding: 20px; border:1px solid #1f2937; background: linear-gradient(135deg, rgba(34,211,238,.10), rgba(167,139,250,.10));
+      }}
+      .metric {{ font-size: 1.8rem; font-weight: 900; }}
+      .muted  {{ opacity:.7; }}
+      .section-title {{ font-weight:800; font-size:1.05rem; margin:.25rem 0 .5rem; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="app-header"><h1>🩺 Lifestyle Disease Risk Predictor</h1></div>', unsafe_allow_html=True)
+st.caption("Only the inputs shown are used by the current reduced model.")
+
+# ---- Step state (0=Vitals, 1=Daily Habits)
+if "step" not in st.session_state:
+    st.session_state.step = 0
+
+# ==============================
+# Ranges for sliders
+# ==============================
+R = {
+    "bmi": (10, 50, 22),
+    "blood_pressure": (80, 200, 120),
+    "cholesterol": (100, 400, 180),
+    "sleep_hours": (0, 12, 7),
+    "physical_activity": (0, 30, 5),
+    "work_hours": (0, 16, 8),
+    "calorie_intake": (1000, 5000, 2000),
+    "sugar_intake": (0, 300, 50),
+    "water_intake": (0, 10, 2),
+}
+
+# Helper: safely get a value from session_state with sensible defaults
+def _d(key: str):
+    if key in st.session_state and st.session_state.get(key) is not None:
+        return st.session_state.get(key)
+    # fall back to the default (3rd item) from R if available, else 0
+    if key in R and len(R[key]) >= 3:
+        return R[key][2]
+    return 0
+
+submit = False
+
+# --- Simple stepper header ---
+step_labels = ["🩺 Vitals", "🧭 Daily Habits"]
+cols = st.columns(2)
+for i, c in enumerate(cols):
+    with c:
+        active = (st.session_state.step == i)
+        st.markdown(
+            f"<div class='card' style='text-align:center; border:{'2px solid #22d3ee' if active else '1px solid #222633'}'>"
+            f"<div style='font-weight:800'>{step_labels[i]}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+st.markdown("---")
+
+# ---------- Step 0: Vitals ----------
+if st.session_state.step == 0:
+    st.markdown("<div class='section-title'>Vitals</div>", unsafe_allow_html=True)
+
+    # Full-width sliders
+    st.session_state.bmi = st.slider("BMI", *R["bmi"])
+    st.session_state.blood_pressure = st.slider("Blood Pressure (systolic mmHg)", *R["blood_pressure"])
+    st.session_state.cholesterol = st.slider("Cholesterol (mg/dL)", *R["cholesterol"])
+
+    # Only Next → button (right aligned)
+    _, nxt = st.columns([6,1])
+    with nxt:
+        if st.button("Next →", use_container_width=True):
+            st.session_state.step = 1
+            st.rerun()
+
+# ---------- Step 1: Daily Habits + Predict ----------
+elif st.session_state.step == 1:
+    with st.form("risk-form-final"):
+        st.markdown("<div class='section-title'>Daily Habits</div>", unsafe_allow_html=True)
+        h1, h2 = st.columns(2)
+        with h1:
+            st.session_state.physical_activity = st.slider("Physical Activity (hours/week)", *R["physical_activity"])
+            st.session_state.work_hours = st.slider("Work Hours (per day)", *R["work_hours"])
+            st.session_state.calorie_intake = st.slider("Daily Calorie Intake", *R["calorie_intake"])
+        with h2:
+            st.session_state.sugar_intake = st.slider("Daily Sugar Intake (grams)", *R["sugar_intake"])
+            st.session_state.water_intake = st.slider("Water Intake (liters/day)", *R["water_intake"])
+            st.session_state.sleep_hours = st.slider("Sleep Hours", *R["sleep_hours"])
+
+        cols = st.columns([1,1])
+        with cols[0]:
+            if st.form_submit_button("← Back", use_container_width=True):
+                st.session_state.step = 0
+                st.rerun()
+        with cols[1]:
+            submit = st.form_submit_button("🚀 Predict", use_container_width=True)
+
+# ==============================
+# Submit to FastAPI & render result card
+# ==============================
+if submit:
+    # Anchor to scroll into view
+    st.markdown("<div id='result-anchor'></div>", unsafe_allow_html=True)
+    payload = {
+        "sugar_intake": _d("sugar_intake"),
+        "bmi": _d("bmi"),
+        "cholesterol": _d("cholesterol"),
+        "sleep_hours": _d("sleep_hours"),
+        "physical_activity": _d("physical_activity"),
+        "work_hours": _d("work_hours"),
+        "blood_pressure": _d("blood_pressure"),
+        "calorie_intake": _d("calorie_intake"),
+        "water_intake": _d("water_intake"),
+    }
+
+    try:
+        r = requests.post("http://127.0.0.1:8000/predict", json=payload, timeout=20)
+        if not r.ok:
+            st.error(f"API error {r.status_code}: {r.text}")
+        else:
+            res = r.json()
+            prob = float(res.get("probability", 0.0))
+            pred = str(res.get("prediction", "Unknown"))
+            thr  = float(res.get("threshold", 0.5))
+            model_version = res.get("model_version", "-")
+            
+            st.markdown("---")
+            # Color by server-side decision; keep amber for mid band near threshold
+            band = "low" if prob < max(0.33, thr - 0.15) else ("mid" if prob < max(0.66, thr + 0.15) else "high")
+            pill_class = "pill-green" if pred == "Healthy" else ("pill-amber" if band == "mid" else "pill-red")
+            emoji = "🟢" if pred == "Healthy" else ("🟠" if band == "mid" else "🔴")
+
+            st.markdown(
+                f"""
+                <div class='result'>
+                    <div class='pill {pill_class}'>{emoji} {pred}</div>
+                    <div style='height:10px'></div>
+                    <div style='display:flex; gap:26px; flex-wrap:wrap;'>
+                        <div>
+                            <div class='muted'>Risk probability</div>
+                            <div class='metric'>{prob:.1%}</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.progress(min(max(prob, 0.0), 1.0))
+            st.caption(f"Model: {model_version}")
+
+            # Scroll to result anchor on predict
+            components.html(
+                """
+                <script>
+                    const el = parent.document.getElementById('result-anchor');
+                    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+                </script>
+                """,
+                height=0,
+            )
+
+            st.markdown("### Suggestions (informational, not medical)")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown("**🍽️ Nutrition**\n\nReduce added sugar; prioritize whole foods and fiber.")
+            with c2:
+                st.markdown("**🏃 Activity**\n\nAim for 150+ mins/week moderate activity; increase daily steps.")
+            with c3:
+                st.markdown("**😴 Sleep**\n\nTarget 7–9 hours; keep a consistent schedule and limit screen time at night.")
+
+            st.caption("Disclaimer: This app provides informational insights only and is not a substitute for professional medical advice.")
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}. Is the backend running?")
+'''
+
+    # 4. Write Files
+    create_file(os.path.join("backend", "main.py"), backend_code)
+    create_file(os.path.join("backend", "__init__.py"), "")
+    
+    create_file(os.path.join("frontend", "main.py"), frontend_code)
+    create_file(os.path.join("frontend", "__init__.py"), "")
+
+    print("\n✅ Project structure set up successfully.")
+    print("Next steps:")
+    print("1. Move your .pkl model files into the 'models/' folder.")
+    print("2. Run backend: python -m uvicorn backend.main:app --reload")
+    print("3. Run frontend: streamlit run frontend/main.py")
+
+if __name__ == "__main__":
+    main()
